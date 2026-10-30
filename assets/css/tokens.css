@@ -1,0 +1,156 @@
+/* =========================================================
+   DECO · Bespoke furniture atelier
+   Web design tokens v1.0
+   Load Urbanist before this file:
+   https://fonts.googleapis.com/css2?family=Urbanist:ital,wght@0,100..900;1,100..900&display=swap
+   ========================================================= */
+
+:root {
+  /* ---------- 1. Primitive colours (never use directly in components) ---------- */
+  --deco-espresso: #1E130E;   /* night, primary canvas */
+  --deco-walnut:   #58372B;   /* timber, secondary canvas */
+  --deco-clay:     #9C6B52;   /* leather, decorative only */
+  --deco-sand:     #CDB49A;   /* raw oak, quiet text on dark */
+  --deco-linen:    #FBEAE2;   /* cloth, primary text on dark, light canvas */
+  --deco-olive:    #6E6A4E;   /* workshop accent canvas */
+  --deco-brass:    #B08A55;   /* hardware, single accent */
+
+  /* Derived tones (for depth on screen, not in print) */
+  --deco-espresso-deep: #140C09;  /* page ground below espresso panels */
+  --deco-espresso-lift: #2A1B14;  /* raised surface on espresso */
+  --deco-linen-shade:   #F3DDD1;  /* raised surface on linen */
+  --deco-walnut-ink:    #3B241B;  /* body text on linen when walnut feels too light */
+
+  /* ---------- 2. Semantic colours: dark "Atelier" surface (default) ---------- */
+  --bg:            var(--deco-espresso);
+  --bg-deep:       var(--deco-espresso-deep);
+  --bg-raised:     var(--deco-espresso-lift);
+  --text:          var(--deco-linen);          /* 15.6:1 */
+  --text-muted:    var(--deco-sand);           /*  9.2:1 */
+  --text-accent:   var(--deco-brass);          /*  5.7:1, labels and small accents only */
+  --line:          rgb(251 234 226 / 0.14);
+  --line-strong:   rgb(251 234 226 / 0.32);
+  --focus:         var(--deco-brass);
+  --scrim:         rgb(20 12 9 / 0.55);
+
+  /* ---------- 3. Typography ---------- */
+  --font: "Urbanist", "Avenir Next", "Helvetica Neue", Arial, sans-serif;
+
+  --w-light: 300;  --w-regular: 400;
+  --w-medium: 500; --w-semibold: 600;   /* the only four weights on the website */
+
+  /* Fluid scale. One weight per headline: display 300, heading 400. Never bold or italic words inside a headline. */
+  --fs-display-xl: clamp(3.5rem, 2rem + 7vw, 9rem);      /* 56 → 144 */
+  --fs-display-l:  clamp(2.75rem, 1.6rem + 5vw, 6.5rem); /* 44 → 104 */
+  --fs-display-m:  clamp(2.25rem, 1.5rem + 3.2vw, 4.5rem);/* 36 → 72 */
+  --fs-heading:    clamp(1.5rem, 1.2rem + 1.2vw, 2.25rem);/* 24 → 36 */
+  --fs-title:      1.25rem;   /* 20 */
+  --fs-body-l:     1.25rem;   /* 20 */
+  --fs-body:       1.0625rem; /* 17 */
+  --fs-small:      0.875rem;  /* 14 */
+  --fs-label:      0.75rem;   /* 12 */
+
+  --lh-display: 0.98;  --lh-heading: 1.15;  --lh-body: 1.6;  --lh-label: 1.35;
+  --ls-display: -0.02em;
+  --ls-label:   0.16em;   /* small caps labels, maker's stamp */
+  --ls-tagline: 0.42em;   /* wide tracked taglines */
+
+  /* ---------- 4. Space (4px base) ---------- */
+  --s-1: 4px;   --s-2: 8px;   --s-3: 12px;  --s-4: 16px;  --s-5: 24px;
+  --s-6: 32px;  --s-7: 48px;  --s-8: 64px;  --s-9: 96px;  --s-10: 128px; --s-11: 192px;
+
+  --gutter:   clamp(16px, 5vw, 96px);     /* page side margin, 7% of panel in the deck */
+  --section:  clamp(96px, 12vw, 192px);   /* vertical rhythm between sections */
+  --measure:  62ch;                       /* max line length for running text */
+  --max-w:    1400px;
+
+  /* ---------- 5. Shape ---------- */
+  --r-none: 0;          /* photography, panels: always square */
+  --r-soft: 4px;        /* inputs, small chips */
+  --r-pill: 999px;      /* buttons, tags: the rounded stroke of the mark */
+  --r-arch: 999px 999px 0 0; /* arched image frames and swatches */
+  --stroke: 1.5px;      /* the monoline weight used for icons and dividers */
+
+  /* ---------- 6. Motion: slow, settled, never bouncy ---------- */
+  --ease-settle: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-fade:   cubic-bezier(0.4, 0, 0.2, 1);
+  --t-fast: 200ms;  --t-base: 480ms;  --t-slow: 800ms;  --t-reveal: 1200ms;
+
+  /* ---------- 7. Image treatment ---------- */
+  --ratio-portrait: 4 / 5;
+  --ratio-wide:     16 / 10;
+  --ratio-square:   1 / 1;
+
+  color-scheme: dark;
+}
+
+/* Explicit Espresso surface, to switch back inside another surface */
+[data-surface="espresso"] {
+  --bg: var(--deco-espresso); --bg-deep: var(--deco-espresso-deep); --bg-raised: var(--deco-espresso-lift);
+  --text: var(--deco-linen); --text-muted: var(--deco-sand); --text-accent: var(--deco-brass);
+  --line: rgb(251 234 226 / 0.14); --line-strong: rgb(251 234 226 / 0.32); --focus: var(--deco-brass);
+  color-scheme: dark;
+}
+
+/* Light "Linen" surface. Apply to a section or the whole page. */
+[data-surface="linen"] {
+  --bg:          var(--deco-linen);
+  --bg-deep:     var(--deco-linen-shade);
+  --bg-raised:   #FFF4EE;
+  --text:        var(--deco-walnut);        /* 9.0:1 */
+  --text-muted:  var(--deco-walnut-ink);    /* use for long body copy */
+  --text-accent: var(--deco-clay);          /* 3.9:1, display sizes ≥ 24px only, never labels */
+  --line:        rgb(88 55 43 / 0.16);
+  --line-strong: rgb(88 55 43 / 0.36);
+  --focus:       var(--deco-walnut);
+  color-scheme: light;
+}
+
+/* Walnut surface: statements, quotes, the mark */
+[data-surface="walnut"] {
+  --bg:          var(--deco-walnut);
+  --bg-deep:     #4A2E24;
+  --bg-raised:   #65402F;
+  --text:        var(--deco-linen);   /* 9.0:1 */
+  --text-muted:  var(--deco-sand);    /* 5.3:1 */
+  --text-accent: var(--deco-sand);
+  --line:        rgb(251 234 226 / 0.18);
+  --line-strong: rgb(251 234 226 / 0.36);
+  --focus:       var(--deco-linen);
+}
+
+/* Olive surface: one section per page at most */
+[data-surface="olive"] {
+  --bg:          var(--deco-olive);
+  --bg-deep:     #5E5A42;
+  --bg-raised:   #7A7659;
+  --text:        var(--deco-linen);   /* 4.7:1, keep body ≥ 17px */
+  --text-muted:  var(--deco-linen);
+  --text-accent: var(--deco-linen);
+  --line:        rgb(251 234 226 / 0.22);
+  --line-strong: rgb(251 234 226 / 0.42);
+  --focus:       var(--deco-linen);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --t-fast: 0ms; --t-base: 0ms; --t-slow: 0ms; --t-reveal: 0ms; }
+}
+
+/* ---------- Type roles (utility classes) ---------- */
+.t-display-xl, .t-display-l, .t-display-m {
+  font-family: var(--font); font-weight: var(--w-light);
+  line-height: var(--lh-display); letter-spacing: var(--ls-display);
+  text-wrap: balance;
+}
+.t-display-xl { font-size: var(--fs-display-xl); }
+.t-display-l  { font-size: var(--fs-display-l); }
+.t-display-m  { font-size: var(--fs-display-m); }
+
+.t-heading { font: var(--w-regular) var(--fs-heading)/var(--lh-heading) var(--font); letter-spacing: -0.01em; text-wrap: balance; }
+.t-title   { font: var(--w-semibold) var(--fs-title)/1.3 var(--font); letter-spacing: 0.01em; }
+.t-body-l  { font: var(--w-regular) var(--fs-body-l)/var(--lh-body) var(--font); max-width: var(--measure); }
+.t-body    { font: var(--w-regular) var(--fs-body)/var(--lh-body) var(--font); max-width: var(--measure); }
+.t-small   { font: var(--w-regular) var(--fs-small)/1.5 var(--font); }
+.t-label   { font: var(--w-medium) var(--fs-label)/var(--lh-label) var(--font); letter-spacing: var(--ls-label); text-transform: uppercase; }
+.t-tagline { font: var(--w-light) var(--fs-small)/1.4 var(--font); letter-spacing: var(--ls-tagline); text-transform: uppercase; }
+.t-spread  { text-align: justify; text-align-last: justify; hyphens: auto; }
