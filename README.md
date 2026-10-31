@@ -1,6 +1,7 @@
 # DECO · website preview
 
-A preview of the new DECO website: a walk-in 3D atelier and the online shop.
+A preview of the new DECO website: a walk-in 3D atelier, laid out like a shop with a bill counter
+where you pay for what you add to the bag, and the online shop.
 Orders, samples and visit bookings in this preview are not sent anywhere.
 
 Photography, catalogue and copy are sample content. Material scans are CC0 (see assets/materials/CREDITS.md).

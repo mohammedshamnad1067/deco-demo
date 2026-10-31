@@ -1853,8 +1853,14 @@
   /* ---------- What the 3D store and the planner can use ---------- */
   const worldApi = {
     PRODUCTS, CATEGORIES, FINISHES, bySlug, price, money, esc, ic, asset, store,
-    addToBag: (slug, finish, qty) => addToBag(slug, finish, qty),
+    addToBag: (slug, finish, qty, opts) => addToBag(slug, finish, qty, opts),
     bagCount: () => bag.count(),
+    /* The bill at the 3D counter reads and edits the same bag. */
+    bagItems: () => bag.items.map((i) => ({ slug: i.slug, finish: i.finish, qty: i.qty })),
+    bagTotal: () => bag.total(),
+    setQty: (i, qty) => bag.set(i, qty),
+    removeLine: (i) => takeOut(i),
+    undoRemove: () => putBack(),
     onBag: (fn) => on('bag', fn),
     openBag,
     isSaved: (slug) => saved.has(slug),

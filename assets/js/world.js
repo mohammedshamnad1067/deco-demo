@@ -14,7 +14,10 @@
 (function () {
   'use strict';
 
-  const THREE_URL = 'https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.min.js';
+  /* three.js and its post effects as ES modules from jsDelivr; every effect imports this same core URL, so they share one three. */
+  const CDN = 'https://cdn.jsdelivr.net/npm/three@0.170.0/';
+  const THREE_URL = CDN + '+esm';
+  const POST = ['EffectComposer', 'RenderPass', 'GTAOPass', 'UnrealBloomPass', 'OutputPass', 'ShaderPass'];
   const me = document.currentScript, SRC = (me && me.src) || '';
   const BASE = SRC ? SRC.replace(/[^/?#]*([?#].*)?$/, '') : 'assets/js/';
   const VER = (SRC.match(/\?v=[^&#]+/) || [''])[0];
@@ -31,9 +34,19 @@
   }
 
   /* ---------- Loading (once per visit) ---------- */
-  let threeP = null, partsP = null;
+  let threeP = null, partsP = null, postP = null;
   const loadThree = () => threeP || (threeP = window.__DECO_THREE ? Promise.resolve(window.__DECO_THREE()) : import(THREE_URL));
-  const loadScript = (url) => new Promise((ok, no) => { const s = document.createElement('script'); s.src = url; s.onload = ok; s.onerror = () => no(new Error('Could not load ' + url)); document.head.appendChild(s); });
+  /* Post effects are a bonus: if they fail or take too long, the atelier opens without them. */
+  const loadPost = () => postP || (postP = Promise.race([
+    (window.__DECO_POST ? window.__DECO_POST() : Promise.all(POST.map((n) => import(`${CDN}examples/jsm/postprocessing/${n}.js/+esm`)))).then((mods) => Object.assign({}, ...mods)),
+    new Promise((ok) => setTimeout(() => ok(null), 15000))
+  ]).catch((e) => { console.warn('DECO: post effects unavailable', e); return null; }));
+  /* A dropped request is tried once more before the atelier gives up. */
+  const loadScript = (url, again = true) => new Promise((ok, no) => {
+    const s = document.createElement('script'); s.src = url; s.onload = ok;
+    s.onerror = () => { s.remove(); if (again) setTimeout(() => loadScript(url, false).then(ok, no), 600); else no(new Error('Could not load ' + url)); };
+    document.head.appendChild(s);
+  });
   const loadParts = () => partsP || (partsP = Promise.all([
     window.DECO_MODELS ? 1 : loadScript(BASE + 'world-models.js' + VER),
     window.DECO_SCENE ? 1 : loadScript(BASE + 'world-scene.js' + VER)
@@ -178,7 +191,7 @@
             <button class="w-tb" type="button" data-menu aria-expanded="false" aria-controls="wMenu">${ic('menu')}<span>Menu</span></button>
             <a class="w-tb w-tb--alt" href="#/home">${ic('all')}<span>Shop in 2D</span></a>
           </div>
-          <button class="w-pill w-tb w-bag" type="button" data-bag aria-label="Bag">${ic('bag')}<span>Bag</span><span class="count" data-bag-count>0</span></button>
+          <button class="w-pill w-tb w-bag" type="button" data-bag aria-controls="wBill" aria-expanded="false" aria-label="Your bill">${ic('bag')}<span class="w-bag__t">Bill</span><span class="count" data-bag-count>0</span><span class="w-bag__sum t-price" data-bag-sum hidden></span></button>
           <div class="w-pill">
             <button class="w-tb" type="button" data-night aria-pressed="false" title="Day or night">${ic('sun', 'w-ic-day')}${ic('moon', 'w-ic-night')}<span data-clock>00:00</span></button>
             <button class="w-tb w-tb--ic" type="button" data-sound aria-pressed="false" aria-label="Sound">${ic('sound', 'w-ic-on')}${ic('mute', 'w-ic-off')}</button>
@@ -220,6 +233,28 @@
             <div class="qty" role="group" aria-label="Quantity"><button type="button" data-q="-1" aria-label="One fewer">${ic('minus')}</button><output data-p-qty>1</output><button type="button" data-q="1" aria-label="One more">${ic('plus')}</button></div>
             <button class="btn btn--solid" type="button" data-p-add>Add to bag<span class="add__price" data-p-addprice></span></button>
           </div>
+        </footer>
+      </aside>
+      <aside class="w-panel w-bill" id="wBill" role="dialog" aria-labelledby="wbTitle" hidden>
+        <header class="wp-head">
+          <p class="t-cap wp-count">${ic('bag')}<span data-b-count>Nothing yet</span></p>
+          <span class="wp-sp"></span>
+          <button class="wp-ic" type="button" data-b-close aria-label="Close the bill">${ic('close')}</button>
+        </header>
+        <div class="wp-scroll">
+          <div class="wb-slip">
+            <div class="wb-top">
+              <span class="w-av" aria-hidden="true"><svg viewBox="0 0 224 238"><use href="#logo-icon"/></svg></span>
+              <span><span class="t-label">DECO atelier</span><span class="t-cap" data-b-when></span></span>
+            </div>
+            <h2 class="t-h2" id="wbTitle">Your bill</h2>
+            <ul class="wb-lines" data-b-lines></ul>
+            <div class="wb-sum" data-b-sum></div>
+          </div>
+        </div>
+        <footer class="wp-foot wb-foot">
+          <button class="btn btn--solid wb-pay" type="button" data-b-pay>Pay<span class="add__price" data-b-paysum></span></button>
+          <p class="t-cap wb-safe">Delivery details and payment come next, on one page.</p>
         </footer>
       </aside>
       <aside class="w-menu" id="wMenu" aria-label="Menu" hidden>
@@ -264,30 +299,37 @@
 
     (async () => {
       try {
-        const [mod] = await Promise.all([loadThree(), loadParts()]);
+        const [mod, , post] = await Promise.all([loadThree(), loadParts(), small() ? null : loadPost()]);
         if (dead) return;
         THREE = mod; target = 22;
-        if (document.fonts) await Promise.race([Promise.all([document.fonts.load('300 112px Comfortaa'), document.fonts.load('700 30px Quicksand')]), wait(2500)]);
+        if (document.fonts) await Promise.race([Promise.all(['300 112px Comfortaa', '400 30px Comfortaa', '700 30px Quicksand', '500 40px Quicksand'].map((f) => document.fonts.load(f))), wait(2500)]);
         const manager = new THREE.LoadingManager();
         const loaded = new Promise((ok) => { manager.onLoad = ok; });
         manager.onProgress = (url, n, total) => { target = Math.max(target, 22 + 70 * (n / total)); };
         const loader = new THREE.ImageLoader(manager), cache = new Map();
+        /* The travertine scan is vein-cut, with strong bands; softened a little it reads as stone, not oak. */
+        const SOFTEN = { travertine: 'contrast(.7) saturate(.75) brightness(1.05)' };
+        const soften = (im, f) => { try { const c = document.createElement('canvas'); c.width = im.naturalWidth || im.width; c.height = im.naturalHeight || im.height; const x = c.getContext('2d'); x.filter = f; x.drawImage(im, 0, 0); return c; } catch (e) { return im; } };
         /* Scans load into textures that exist straight away; a dropped request is tried twice more. */
         const texture = (name, product) => {
           if (cache.has(name)) return cache.get(name);
           const t = new THREE.Texture(), url = asset(product ? `assets/products/${name}.jpg` : `assets/materials/${name}.jpg`);
           t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8;
           if (product) { t.repeat.set(.62, .856); t.offset.set(.19, .069); } else t.wrapS = t.wrapT = THREE.MirroredRepeatWrapping; // scans are not tileable; mirroring hides the seams
-          const get = (n) => loader.load(url, (im) => { t.image = im; t.needsUpdate = true; }, undefined, () => { if (n < 2 && !dead) later(() => get(n + 1), 500 * (n + 1)); });
+          const get = (n) => loader.load(url, (im) => { t.image = !product && SOFTEN[name] ? soften(im, SOFTEN[name]) : im; t.needsUpdate = true; }, undefined, () => { if (n < 2 && !dead) later(() => get(n + 1), 500 * (n + 1)); });
           get(0);
           cache.set(name, t); return t;
         };
         const tones = {}; for (const [k, f] of Object.entries(FINISHES)) tones[k] = f.tone;
-        kit = window.DECO_MODELS.create(THREE, { texture, tones });
-        scene = window.DECO_SCENE.create(THREE, { canvas, kit, catalog: { bySlug, FINISHES }, mobile: small(), reduce, onPick: openPanel, onHover: hover, onZone: (v) => { closePanel(true); scene.view(v); }, onNoor: () => (guide.classList.contains('is-on') ? closeGuide() : openGuide()) });
+        const quality = small() ? 'mid' : 'high';
+        kit = window.DECO_MODELS.create(THREE, { texture, tones, quality });
+        scene = window.DECO_SCENE.create(THREE, { canvas, kit, catalog: { bySlug, FINISHES }, mobile: small(), reduce, post, lock: /[?&]hq\b/.test(location.search), onPick: openPanel, onHover: hover, onZone: zone, onNoor: () => (guide.classList.contains('is-on') ? closeGuide() : openGuide()) });
         scene.setNight(night, true);
+        syncBill();
         await Promise.race([loaded, wait(20000)]);
         if (dead) return;
+        /* With the scans in, the room's own light is captured for reflections. */
+        try { scene.bake(); } catch (e) { console.warn('DECO: room light not captured', e); }
         target = 100;
         scene.start();
         await wait(reduce ? 200 : 900);
@@ -347,32 +389,112 @@
     $('[data-night]').addEventListener('click', () => setNightMode(!night));
     function syncSound() { const b = $('[data-sound]'); b.setAttribute('aria-pressed', String(sound.on)); b.setAttribute('aria-label', sound.on ? 'Sound on. Turn it off' : 'Sound off. Turn it on'); }
     $('[data-sound]').addEventListener('click', () => { sound.set(!sound.on); syncSound(); try { sessionStorage.setItem('deco-sound', sound.on ? '1' : '0'); } catch (e) { /* no storage */ } sound.play('tap'); });
-    const bagCount = $('[data-bag-count]');
-    const setCount = (n) => { bagCount.textContent = n; $('[data-bag]').setAttribute('aria-label', `Bag, ${plural(n, 'item')}`); };
-    setCount(api.bagCount());
-    const offBag = api.onBag ? api.onBag((n) => setCount(n)) : null;
-    $('[data-bag]').addEventListener('click', () => { closePanel(); api.openBag(); });
+    /* ---------- The bill: the bag read as a receipt, paid at the counter ---------- */
+    const bagCount = $('[data-bag-count]'), bagSum = $('[data-bag-sum]'), billEl = $('.w-bill');
+    let billOpen = false;
+    const items = () => (api.bagItems ? api.bagItems() : []);
+    const total = () => (api.bagTotal ? api.bagTotal() : 0);
+    function syncBill() {
+      const n = api.bagCount(), t = total();
+      bagCount.textContent = n;
+      bagSum.hidden = !n; bagSum.innerHTML = n ? price(t) : '';
+      $('[data-bag]').setAttribute('aria-label', n ? `Your bill: ${plural(n, 'piece')}, ${money(t)}` : 'Your bill, empty');
+      if (scene) scene.setBill({ count: n, total: t, lines: items().length });
+      if (billOpen) renderBill();
+    }
+    function renderBill() {
+      const list = items(), n = api.bagCount(), t = total();
+      const f = document.activeElement, keep = f && billEl.contains(f) && f.dataset && f.dataset.bq ? `[data-bq="${f.dataset.bq}"][data-i="${f.dataset.i}"]` : null;
+      $('[data-b-count]').textContent = n ? plural(n, 'piece') : 'Nothing yet';
+      $('[data-b-when]').textContent = `Alserkal Avenue, Dubai · ${dubai({ weekday: 'short', day: 'numeric', month: 'short' })}, ${dubai({ hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })}`;
+      $('[data-b-lines]').innerHTML = list.length ? list.map((it, i) => {
+        const p = bySlug[it.slug], fin = it.finish && FINISHES[it.finish];
+        return `<li class="wb-line">
+          <img src="${asset(p.thumb)}" alt="" width="64" height="64">
+          <div class="wb-line__t">
+            <button type="button" class="wb-name t-h4" data-b-open="${p.slug}">${esc(p.name)}</button>
+            <p class="t-cap">${fin ? `${esc(fin.name)} · ` : ''}${p.lead === 'made' ? 'Made to order' : 'In stock'}</p>
+            <div class="qty qty--sm" role="group" aria-label="How many ${esc(p.name)}"><button type="button" data-bq="-1" data-i="${i}" aria-label="One fewer">${ic('minus')}</button><output>${it.qty}</output><button type="button" data-bq="1" data-i="${i}" aria-label="One more"${it.qty >= 10 ? ' disabled' : ''}>${ic('plus')}</button></div>
+          </div>
+          <div class="wb-line__p"><span class="t-price">${price(p.price * it.qty)}</span><button class="wb-x" type="button" data-bx="${i}" aria-label="Take ${esc(p.name)} off the bill">${ic('close')}</button></div>
+        </li>`;
+      }).join('') : `<li class="wb-empty"><p class="t-body">Nothing on your bill yet.</p><p class="t-small">Tap anything that glows, choose a finish, then Add to bag. It appears here, and on the counter's screen.</p>
+          <div class="wg-chips">${PRODUCTS.filter((p) => p.tag === 'Bestseller').slice(0, 3).map((p) => `<button class="chip" type="button" data-b-open="${p.slug}">${ic(p.category)}${esc(p.name)}</button>`).join('')}</div></li>`;
+      $('[data-b-sum]').innerHTML = list.length ? `<div><span>Subtotal</span><span class="t-price">${price(t)}</span></div>
+        <div><span>Delivery in the UAE</span><span>Complimentary</span></div>
+        <div class="wb-total"><span class="t-h4">Total</span><span class="t-price">${price(t)}</span></div>
+        <p class="t-cap">Prices include VAT.</p>` : '';
+      const pay = $('[data-b-pay]');
+      pay.disabled = !list.length; $('[data-b-paysum]').innerHTML = list.length ? price(t) : '';
+      pay.setAttribute('aria-label', list.length ? `Pay ${money(t)}` : 'Pay');
+      if (keep) { const b = billEl.querySelector(keep); if (b && !b.disabled) b.focus({ preventScroll: true }); }
+    }
+    function openBill() {
+      if (!scene || state !== 'inside') return;
+      if (opened) closePanel(true);
+      closeGuide(); closeMenu();
+      billOpen = true; renderBill();
+      billEl.hidden = false;
+      const t = document.getElementById('toast'); if (t) t.classList.remove('is-on', 'is-split'); // the bill says it all
+      requestAnimationFrame(() => { billEl.classList.add('is-on'); root.classList.add('has-panel', 'has-bill'); offset(); });
+      $('[data-bag]').setAttribute('aria-expanded', 'true');
+      scene.view('counter');
+      sound.play('open');
+      root.classList.add('tip-gone'); label.classList.remove('is-on');
+      later(() => { const c = $('[data-b-close]'); if (c && billOpen && !small()) c.focus({ preventScroll: true }); }, 60);
+    }
+    function closeBill() {
+      if (!billOpen) return;
+      billOpen = false;
+      billEl.classList.remove('is-on'); root.classList.remove('has-bill');
+      if (!opened) { root.classList.remove('has-panel'); if (scene) scene.setOffset(0, 0); }
+      $('[data-bag]').setAttribute('aria-expanded', 'false');
+      later(() => { if (!billOpen) billEl.hidden = true; }, 650);
+    }
+    const offBag = api.onBag ? api.onBag(() => syncBill()) : null;
+    syncBill();
+    $('[data-bag]').addEventListener('click', () => (billOpen ? closeBill() : openBill()));
+    $('[data-b-close]').addEventListener('click', () => { closeBill(); $('[data-bag]').focus(); });
+    billEl.addEventListener('click', (e) => {
+      const q = e.target.closest('[data-bq]'), x = e.target.closest('[data-bx]'), op = e.target.closest('[data-b-open]');
+      const takeOff = (i) => { const it = items()[i]; if (!it) return; const name = bySlug[it.slug].name; api.removeLine(i); api.toast(`${name} is off your bill`, api.undoRemove ? { label: 'Undo', run: api.undoRemove } : false); };
+      if (q) { const i = +q.dataset.i, it = items()[i]; if (!it) return; sound.play('tap'); if (it.qty + +q.dataset.bq < 1) takeOff(i); else api.setQty(i, it.qty + +q.dataset.bq); }
+      else if (x) { sound.play('tap'); takeOff(+x.dataset.bx); }
+      else if (op) { closeBill(); openPanel(op.dataset.bOpen, 0); }
+    });
+    $('[data-b-pay]').addEventListener('click', (e) => {
+      if (!items().length) return;
+      fx.beam(e.currentTarget); sound.play('add');
+      later(() => api.go('#/checkout'), reduce ? 0 : 420);
+    });
 
     /* ---------- Hover label ---------- */
     function hover(h) {
       if (!h || state !== 'inside') { label.classList.remove('is-on'); return; }
       if (h.slug) { const p = bySlug[h.slug]; $('[data-l-name]').textContent = p.name; $('[data-l-price]').innerHTML = price(p.price); }
       else if (h.noor) { $('[data-l-name]').textContent = 'Noor'; $('[data-l-price]').textContent = 'Ask me anything'; }
-      else { const s = { living: 'Living', bedroom: 'Bedroom', dining: 'Dining', storage: 'Storage', reading: 'Reading corner', objects: 'Objects' }[h.sign] || ''; $('[data-l-name]').textContent = s; $('[data-l-price]').textContent = 'Walk over'; }
+      else {
+        const s = { living: 'Living', bedroom: 'Bedroom', dining: 'Dining', storage: 'Storage', reading: 'Reading corner', objects: 'Objects', finishes: 'Finishes', lighting: 'Lighting', materials: 'Materials', counter: 'Bill counter' }[h.sign] || '';
+        $('[data-l-name]').textContent = s;
+        const lp = $('[data-l-price]');
+        if (h.sign === 'counter') { if (api.bagCount()) lp.innerHTML = `Pay ${price(total())}`; else lp.textContent = 'Your bill, empty'; }
+        else lp.textContent = h.act === 'samples' ? 'Free samples' : 'Walk over';
+      }
       const r = root.getBoundingClientRect(), x = h.x - r.left, y = h.y - r.top, flip = x > r.width - 240;
       label.style.transform = `translate(${flip ? x - 14 : x + 16}px, ${y + 16}px) translateX(${flip ? '-100%' : '0'})`;
       label.classList.add('is-on');
     }
 
     /* ---------- Product panel ---------- */
-    const chosen = new Map();
     let qty = 1, view = '3d';
-    const finishOf = (p) => chosen.get(p.slug) || p.finishes[0] || null;
+    /* Each copy in the room keeps its own finish; the panel shows the one that was tapped. */
+    const finishOf = (p) => (scene && scene.finishOf(p.slug, opened && opened.slug === p.slug ? opened.which : 0)) || p.finishes[0] || null;
     function offset() {
       if (!scene) return;
-      if (!opened) { scene.setOffset(0, 0); return; }
-      if (small()) scene.setOffset(0, Math.round(panel.offsetHeight / 2 - 24));
-      else scene.setOffset(Math.round((panel.offsetWidth + 16) / 2), 0);
+      const el = billOpen ? billEl : opened ? panel : null;
+      if (!el) { scene.setOffset(0, 0); return; }
+      if (small()) scene.setOffset(0, Math.round(el.offsetHeight / 2 - 24));
+      else scene.setOffset(Math.round((el.offsetWidth + 16) / 2), 0);
     }
     function fillFinish(p) {
       const k = finishOf(p), box = $('[data-p-fin]');
@@ -410,7 +532,8 @@
       if (!p) return;
       const list = PRODUCTS.filter((x) => x.category === p.category);
       const was = !!opened;
-      opened = { slug, list, i: list.indexOf(p) };
+      if (billOpen) closeBill();
+      opened = { slug, list, i: list.indexOf(p), which: Math.max(0, which | 0) };
       closeGuide(); closeMenu();
       fill(p);
       panel.hidden = false;
@@ -446,9 +569,8 @@
       const b = e.target.closest('[data-fin]');
       if (!b || !opened) return;
       const p = bySlug[opened.slug];
-      chosen.set(p.slug, b.dataset.fin);
+      scene.setFinish(p.slug, b.dataset.fin, opened.which);
       fillFinish(p);
-      scene.setFinish(p.slug, b.dataset.fin);
       if (viewer) viewer.show(p.slug, b.dataset.fin);
       fx.beam(b);
       sound.play('tap');
@@ -461,12 +583,15 @@
     }));
     $('[data-p-add]').addEventListener('click', (e) => {
       if (!opened) return;
-      const p = bySlug[opened.slug], btn = e.currentTarget, from = $('.wp-view');
-      api.addToBag(p.slug, finishOf(p), qty);
+      const p = bySlug[opened.slug], btn = e.currentTarget, from = $('.wp-view'), n = qty;
+      api.addToBag(p.slug, finishOf(p), n, { quiet: true });
       fx.beam(btn);
       sound.play('add');
       const r = from.getBoundingClientRect();
-      fx.fly({ getBoundingClientRect: () => r, currentSrc: asset(p.thumb) }, $('[data-bag] .ic')).then(() => { bagCount.classList.remove('is-bump'); void bagCount.offsetWidth; bagCount.classList.add('is-bump'); later(() => bagCount.classList.remove('is-bump'), 480); });
+      fx.fly({ getBoundingClientRect: () => r, currentSrc: asset(p.thumb) }, $('[data-bag] .ic')).then(() => {
+        bagCount.classList.remove('is-bump'); void bagCount.offsetWidth; bagCount.classList.add('is-bump'); later(() => bagCount.classList.remove('is-bump'), 480);
+        if (!dead && !billOpen) api.toast(`${n > 1 ? `${n} × ` : ''}${p.name} ${n > 1 ? 'are' : 'is'} on your bill`, { label: 'View bill', run: () => openBill() });
+      });
     });
     $('[data-p-share]').addEventListener('click', () => {
       if (!opened) return;
@@ -482,6 +607,14 @@
       sound.play('tap');
     });
     const offSaved = api.onSaved ? api.onSaved(() => { if (opened) $('[data-p-save]').setAttribute('aria-pressed', String(api.isSaved(opened.slug))); }) : null;
+
+    /* Places: the counter opens the bill; the materials table, Noor on samples; anything else, a walk. */
+    function zone(v, act) {
+      if (v === 'counter' || act === 'bill') { openBill(); return; }
+      closePanel(true); closeBill();
+      scene.view(v);
+      if (act === 'samples') later(() => { openGuide(); answer('samples'); }, reduce ? 0 : 1100);
+    }
 
     /* Rooms: open the first piece of a family, then step through it. */
     root.addEventListener('click', (e) => {
@@ -535,6 +668,10 @@
       if (has(/visit|showroom|address|where are you|opening|open on|hours|al quoz|alserkal/)) return say('The real atelier is Warehouse 41, Alserkal Avenue, Al Quoz 1. Saturday to Thursday, 10:00 to 19:00; Friday by appointment.', [{ label: 'Book a visit', href: '#/atelier', icon: 'calendar' }]);
       if (has(/\b(night|dark|evening|lamps on)\b/)) { const was = night; setNightMode(true); return say(was ? 'The lamps are already on.' : 'There. The lamps are on.'); }
       if (has(/\b(day|morning|sun|bright)\b/) && !has(/deliver/)) { const was = night; setNightMode(false); return say(was ? 'Here is the afternoon light again.' : 'It is bright in here already.'); }
+      if (has(/\b(bill|pay|paying|counter|checkout|check out|cashier|till|cart|basket|my bag)\b/)) {
+        later(() => openBill(), reduce ? 0 : 600);
+        return say(api.bagCount() ? `Your bill comes to ${price(total())}. The counter is by the door, on the right. Follow me.` : 'The counter is by the door, on the right. Add a piece to your bag and it appears on the bill there.');
+      }
       const fin = words.map((w) => FIN_WORDS[w]).find(Boolean);
       if (fin) {
         const f = FINISHES[fin], list = PRODUCTS.filter((p) => p.finishes.includes(fin));
@@ -548,7 +685,7 @@
       if (num && has(/under|below|less|budget|max|up to|cheaper/)) {
         let n = parseFloat(num[1].replace(/,/g, '')); if (num[2]) n *= 1000;
         const list = PRODUCTS.filter((p) => p.price <= n).sort((a, b) => b.price - a.price);
-        return list.length ? say(`${plural(list.length, 'piece')} at ${esc(money(n))} or less. A few to start with:`, list.slice(0, 5).map(pieceChip)) : say(`Nothing here is under ${esc(money(n))}. The smallest piece is the Terra Bowl.`, [pieceChip(bySlug['terra-bowl'])]);
+        return list.length ? say(`${plural(list.length, 'piece')} at ${price(n)} or less. A few to start with:`, list.slice(0, 5).map(pieceChip)) : say(`Nothing here is under ${price(n)}. The smallest piece is the Terra Bowl.`, [pieceChip(bySlug['terra-bowl'])]);
       }
       const room = words.map((w) => ROOM_WORDS[w.replace(/s$/, '')]).find(Boolean);
       const found = api.find ? api.find(text) : [];
@@ -585,7 +722,7 @@
     function onKey(e) {
       if (state !== 'inside') { if (e.key === 'Enter' && state === 'hello' && !e.target.closest('a, button, input')) enter(wantSound); return; }
       if (document.querySelector('.panel.is-on, .search.is-on')) return; // the shop's own panels are open on top
-      if (e.key === 'Escape') { if (guide.classList.contains('is-on')) { closeGuide(); $('[data-ask]').focus(); } else if (menu.classList.contains('is-on')) { closeMenu(); $('[data-menu]').focus(); } else if (opened) closePanel(); return; }
+      if (e.key === 'Escape') { if (guide.classList.contains('is-on')) { closeGuide(); $('[data-ask]').focus(); } else if (menu.classList.contains('is-on')) { closeMenu(); $('[data-menu]').focus(); } else if (billOpen) { closeBill(); $('[data-bag]').focus(); } else if (opened) closePanel(); return; }
       if (opened && (e.key === 'ArrowRight' || e.key === 'ArrowLeft') && !e.target.closest('input, textarea, .swatches, .wp-tabs')) { e.preventDefault(); step(e.key === 'ArrowRight' ? 1 : -1); }
     }
     document.addEventListener('keydown', onKey);
@@ -607,7 +744,7 @@
       if (scene) scene.destroy();
       root.remove();
     }
-    if (/[?&]debug\b/.test(location.search)) window.__decoWorld = { get scene() { return scene; }, open: openPanel, close: closePanel, enter, night: setNightMode };
+    if (/[?&]debug\b/.test(location.search)) window.__decoWorld = { get scene() { return scene; }, open: openPanel, close: closePanel, enter, night: setNightMode, bill: openBill, closeBill };
     return { unmount };
   }
 

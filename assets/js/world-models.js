@@ -6,16 +6,19 @@
    triplanar mapping, so bouclé loops and stone pores keep the same
    scale on every shape. Front faces +z, the floor is y = 0.
 
-   DECO_MODELS.create(THREE, { texture, tones }) returns
-     build(slug, finish) → THREE.Group
+   DECO_MODELS.create(THREE, { texture, tones, quality }) returns
+     build(slug, finish) → THREE.Group, and prop(name, opts) for the
+     things a shop is dressed with (books, ceramics, plants, bags).
    A group's userData: { slug, glow: [materials lit at night],
    lights: [[x, y, z, power]] (local points where a lamp shines) }.
+   quality 'high' adds a soft sheen to upholstery.
    ========================================================= */
 (function () {
   'use strict';
 
-  function create(THREE, { texture, tones }) {
+  function create(THREE, { texture, tones, quality }) {
     const V2 = THREE.Vector2, V3 = THREE.Vector3, PI = Math.PI;
+    const HI = quality === 'high';
 
     /* ---------- Geometry (cached per shape, shared by every copy) ---------- */
     const cache = new Map();
@@ -39,13 +42,13 @@
         return g;
       });
     }
-    const ellipsoid = (rx, ry, rz) => memo(`el${rx},${ry},${rz}`, () => new THREE.SphereGeometry(1, 36, 22).scale(rx, ry, rz));
+    const ellipsoid = (rx, ry, rz) => memo(`el${rx},${ry},${rz}`, () => new THREE.SphereGeometry(1, 28, 16).scale(rx, ry, rz));
     const dome = (r, sy, open = true) => memo(`dm${r},${sy}`, () => new THREE.SphereGeometry(r, 48, 16, 0, PI * 2, 0, PI / 2).scale(1, sy, 1));
     const cylinder = (rt, rb, h, seg = 40, open = false) => memo(`cy${rt},${rb},${h},${seg},${open}`, () => new THREE.CylinderGeometry(rt, rb, h, seg, 1, open));
     /* A turned piece: [radius, height] pairs through a smooth spline, spun around y. */
-    const turned = (pts, seg = 64) => memo(`la${pts.join(';')}`, () => {
+    const turned = (pts, seg = 48) => memo(`la${pts.join(';')}|${seg}`, () => {
       const c = new THREE.SplineCurve(pts.map(([x, y]) => new V2(x, y)));
-      return new THREE.LatheGeometry(c.getPoints(pts.length * 10).map((p) => new V2(Math.max(0, p.x), p.y)), seg);
+      return new THREE.LatheGeometry(c.getPoints(pts.length * 6).map((p) => new V2(Math.max(0, p.x), p.y)), seg);
     });
     const tube = (pts, r, seg = 100, radial = 18) => new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts.map(([x, y, z]) => new V3(x, y, z))), seg, r, radial, false);
 
@@ -74,32 +77,83 @@
 
     /* ---------- Materials ---------- */
     const PHOTO = { natural: 'boucle', terracotta: 'terracotta', olive: 'wool', travertine: 'travertine', oak: 'white-oak', walnut: 'walnut', smoked: 'smoked-oak', brass: 'brass', leather: 'leather' };
-    /* [texture repeats per metre, roughness, metalness] */
-    const FEEL = { natural: [3.3, 1, 0], terracotta: [3.3, 1, 0], olive: [2.6, .95, 0], travertine: [1.2, .46, 0], oak: [1.3, .56, 0], walnut: [1.3, .5, 0], smoked: [1.3, .5, 0], brass: [2, .32, .85], leather: [2.4, .6, 0] };
+    /* [texture repeats per metre, roughness, metalness, relief (height of the loops, grain or pores in metres), gloss drift] */
+    const FEEL = {
+      natural: [3.3, 1, 0, .0026, 0], terracotta: [3.3, 1, 0, .0026, 0], olive: [2.6, .95, 0, .0012, 0],
+      travertine: [2, .46, 0, .0004, .7], oak: [1.3, .56, 0, .00045, .6], walnut: [1.3, .5, 0, .00035, .6], smoked: [1.3, .5, 0, .00035, .6],
+      brass: [2, .32, .85, .00012, .7], leather: [2.4, .6, 0, .0005, .5]
+    };
+    const FABRIC = { natural: 1, terracotta: 1, olive: 1 };
+    const LUM = 'vec3(.3, .59, .11)';
 
-    /* Object-space triplanar mapping: the scan is projected along x, y and z and blended by the surface normal. */
-    function triplanar(m, scale) {
+    /* Object-space triplanar mapping: the scan is projected along x, y and z and blended by the surface normal.
+       Its brightness doubles as height: the neighbouring pixels' samples tilt the normal (bouclé loops, open
+       grain, stone pores catch the light), and nudge the roughness so highlights break up as they do on real
+       oiled wood and honed stone. Relief is in metres, so it fades with distance the way real texture does. */
+    function triplanar(m, scale, relief = 0, drift = 0) {
       m.onBeforeCompile = (sh) => {
         sh.uniforms.uTri = { value: scale };
-        sh.vertexShader = 'varying vec3 vTriP;\nvarying vec3 vTriN;\n' + sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\nvTriP = position;\nvTriN = normal;');
-        sh.fragmentShader = 'uniform float uTri;\nvarying vec3 vTriP;\nvarying vec3 vTriN;\n' + sh.fragmentShader.replace('#include <map_fragment>', `
-          #ifdef USE_MAP
-            vec3 tw = pow(abs(normalize(vTriN)), vec3(4.0));
-            tw /= (tw.x + tw.y + tw.z);
-            vec4 sampledDiffuseColor = texture2D(map, vTriP.zy * uTri) * tw.x + texture2D(map, vTriP.xz * uTri) * tw.y + texture2D(map, vTriP.xy * uTri) * tw.z;
-            diffuseColor *= sampledDiffuseColor;
+        sh.uniforms.uRelief = { value: relief };
+        sh.uniforms.uDrift = { value: drift };
+        sh.vertexShader = 'varying vec3 vTriP;\nvarying vec3 vTriN;\n' + sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
+          #ifdef USE_INSTANCING
+            vTriP = (instanceMatrix * vec4(position, 1.0)).xyz; vTriN = mat3(instanceMatrix) * normal;
+          #else
+            vTriP = position; vTriN = normal;
           #endif`);
+        sh.fragmentShader = 'uniform float uTri;\nuniform float uRelief;\nuniform float uDrift;\nvarying vec3 vTriP;\nvarying vec3 vTriN;\nfloat decoH = .5;\nvec2 decoD = vec2(0.0);\n' + sh.fragmentShader
+          .replace('#include <map_pars_fragment>', `#include <map_pars_fragment>
+            #ifdef USE_MAP
+              /* Projections that hardly show are skipped (flat faces need one); gradients are taken first, so mip levels stay right. */
+              vec4 decoTri(vec3 p, vec3 w) {
+                vec2 a = p.zy * uTri, b = p.xz * uTri, c = p.xy * uTri;
+                vec2 ax = dFdx(a), ay = dFdy(a), bx = dFdx(b), by = dFdy(b), cx = dFdx(c), cy = dFdy(c);
+                vec4 s = vec4(0.0); float k = 0.0;
+                if (w.x > .02) { s += textureGrad(map, a, ax, ay) * w.x; k += w.x; }
+                if (w.y > .02) { s += textureGrad(map, b, bx, by) * w.y; k += w.y; }
+                if (w.z > .02) { s += textureGrad(map, c, cx, cy) * w.z; k += w.z; }
+                return s / max(k, 1e-4);
+              }
+            #endif`)
+          .replace('#include <map_fragment>', `
+            #ifdef USE_MAP
+              vec3 tw = pow(abs(vTriN) / max(length(vTriN), 1e-6), vec3(4.0));
+              tw /= max(tw.x + tw.y + tw.z, 1e-6);
+              vec4 sampledDiffuseColor = decoTri(vTriP, tw);
+              diffuseColor *= sampledDiffuseColor;
+              decoH = dot(sampledDiffuseColor.rgb, ${LUM});
+              #ifdef DECO_RELIEF
+                decoD = vec2(dot(decoTri(vTriP + dFdx(vTriP), tw).rgb, ${LUM}), dot(decoTri(vTriP + dFdy(vTriP), tw).rgb, ${LUM})) - decoH;
+              #endif
+            #endif`)
+          .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = clamp(roughnessFactor * (1.0 + (.5 - decoH) * uDrift), .04, 1.0);')
+          .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+            #ifdef DECO_RELIEF
+            {
+              vec3 sx = dFdx(-vViewPosition), sy = dFdy(-vViewPosition);
+              vec3 r1 = cross(sy, normal), r2 = cross(normal, sx);
+              float det = dot(sx, r1) * faceDirection;
+              vec3 grad = sign(det) * uRelief * (decoD.x * r1 + decoD.y * r2), bent = abs(det) * normal - grad;
+              if (abs(det) > 1e-14 && dot(bent, bent) > 1e-28) normal = normalize(bent);
+            }
+            #endif`);
       };
+      if (relief > 0) m.defines = Object.assign(m.defines || {}, { DECO_RELIEF: '' });
       m.customProgramCacheKey = () => 'deco-tri';
       return m;
     }
+    const WHITE = new THREE.Color(1, 1, 1);
     function surface(key, tint, scale) {
-      const [s0, rough, metal] = FEEL[key] || FEEL.travertine, s = scale || s0;
+      const [s0, rough, metal, relief, drift] = FEEL[key] || FEEL.travertine, s = scale || s0;
       const o = { map: texture(PHOTO[key] || 'travertine'), roughness: rough, metalness: metal, color: tint === undefined ? 0xffffff : tint };
-      return triplanar(new THREE.MeshStandardMaterial(o), s);
+      /* Upholstery gets a velvet sheen at grazing angles: the soft rim of light that reads as wool. */
+      const m = HI && FABRIC[key]
+        ? new THREE.MeshPhysicalMaterial(Object.assign(o, { sheen: 1, sheenRoughness: .55, sheenColor: tone(key).lerp(WHITE, .3).multiplyScalar(.75) }))
+        : new THREE.MeshStandardMaterial(o);
+      return triplanar(m, s, relief, drift);
     }
     const plain = (color, rough = .85, metal = 0) => new THREE.MeshStandardMaterial({ color, roughness: rough, metalness: metal });
-    const tone = (k, fb = '#CDB49A') => new THREE.Color((k && tones[k]) || fb);
+    function tone(k, fb = '#CDB49A') { return new THREE.Color((k && tones[k]) || fb); }
     /* Lit at night: the scene raises emissiveIntensity when the lamps come on. */
     function glowing(color = 0xfff4e6, emissive = 0xffc58a, side = THREE.FrontSide) {
       const m = new THREE.MeshStandardMaterial({ color, emissive, emissiveIntensity: .05, roughness: .9, side });
@@ -116,17 +170,68 @@
     /* A thin dark seam on a front face, for drawers and doors. */
     const seam = (g, w, h, x, y, z) => put(g, new THREE.Mesh(roundedBox(w, h, .006, Math.min(w, h) / 2.2, 1), shadowLine()), x, y, z);
 
-    /* A few quiet things for shelves: books and small turned pots. Not for sale on their own. */
-    const BOOKS = [0xcdb49a, 0x9a5236, 0xe7d8c6, 0x6e6a4e, 0x58372b];
-    function books(g, x, y, z, n, seed = 1) {
+    /* Many small things, one draw: shapes are baked into a single mesh, each keeping its own colour. */
+    function batch() {
+      const parts = [], q = new THREE.Quaternion(), e = new THREE.Euler(), sc = new V3();
+      return {
+        add(geo, color, x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0, s = 1) {
+          const m = new THREE.Matrix4().compose(new V3(x, y, z), q.setFromEuler(e.set(rx, ry, rz)).clone(), typeof s === 'number' ? sc.set(s, s, s).clone() : s);
+          parts.push([geo, m, new THREE.Color(color)]);
+        },
+        get size() { return parts.length; },
+        mesh(mat) {
+          let n = 0;
+          const flat = parts.map(([g, m, c]) => { const ng = (g.index ? g.toNonIndexed() : g.clone()).applyMatrix4(m); n += ng.attributes.position.count; return [ng, c]; });
+          const pos = new Float32Array(n * 3), nor = new Float32Array(n * 3), col = new Float32Array(n * 3);
+          let o = 0;
+          for (const [g, c] of flat) {
+            const k = g.attributes.position.count;
+            pos.set(g.attributes.position.array, o * 3); nor.set(g.attributes.normal.array, o * 3);
+            for (let i = 0; i < k; i++) { col[(o + i) * 3] = c.r; col[(o + i) * 3 + 1] = c.g; col[(o + i) * 3 + 2] = c.b; }
+            o += k; g.dispose();
+          }
+          const geo = new THREE.BufferGeometry();
+          geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+          geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+          geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+          geo.userData.own = 1; // not shared: freed when its piece is rebuilt
+          return mesh(geo, mat);
+        }
+      };
+    }
+    const tinted = (rough = .9) => new THREE.MeshStandardMaterial({ vertexColors: true, roughness: rough });
+
+    /* A few quiet things for shelves: books and small turned pots. Not for sale on their own.
+       A book is two boards and a spine around a block of paper, so the page edges show. */
+    const BOOKS = [0xcdb49a, 0x9a5236, 0xe7d8c6, 0x6e6a4e, 0x58372b, 0xb9a48c, 0x3b241b];
+    const PAGES = 0xf2e9da;
+    function book(b, w, h, d, color, x, y, z, ry = 0, flat = false) {
+      /* Standing: w is the spine's thickness, h its height. Flat: w × d is the cover, h the thickness. */
+      const t = .0035;
+      if (flat) {
+        const c = Math.cos(ry), s = Math.sin(ry), at = (lx, lz) => [x + lx * c + lz * s, z - lx * s + lz * c];
+        b.add(roundedBox(w, t, d, .0015, 1), color, x, y + t / 2, z, 0, ry);
+        b.add(roundedBox(w, t, d, .0015, 1), color, x, y + h - t / 2, z, 0, ry);
+        const [sx, sz] = at(-w / 2 + t / 2, 0); b.add(roundedBox(t, h, d, .0015, 1), color, sx, y + h / 2, sz, 0, ry);
+        const [px, pz] = at(t / 2, 0); b.add(roundedBox(w - t * 2.2, h - t * 2, d - t * 2.4, .001, 1), PAGES, px, y + h / 2, pz, 0, ry);
+      } else {
+        b.add(roundedBox(t, h, d, .0015, 1), color, x - w / 2 + t / 2, y + h / 2, z);
+        b.add(roundedBox(t, h, d, .0015, 1), color, x + w / 2 - t / 2, y + h / 2, z);
+        b.add(roundedBox(w, h, t, .0015, 1), color, x, y + h / 2, z + d / 2 - t / 2);
+        b.add(roundedBox(w - t * 2, h - t * 1.6, d - t * 2.2, .001, 1), PAGES, x, y + h / 2, z - t * .6);
+      }
+    }
+    function books(g, x, y, z, n, seed = 1, into) {
+      const b = into || batch();
       let cx = x;
       for (let i = 0; i < n; i++) {
         const h = .17 + ((seed * (i + 3) * 37) % 7) / 100, w = .025 + ((seed * (i + 1) * 13) % 3) / 100;
-        rb(g, w, h, .15, .004, plain(BOOKS[(seed + i) % BOOKS.length], .9), cx + w / 2, y + h / 2, z);
-        cx += w + .004;
+        book(b, w, h, .15, BOOKS[(seed + i) % BOOKS.length], cx + w / 2, y, z);
+        cx += w + .003;
       }
+      if (!into) g.add(b.mesh(tinted()));
     }
-    const pot = (g, x, y, z, s = 1, color = 0xe8dccd) => put(g, mesh(turned([[0, 0], [.04 * s, 0], [.055 * s, .05 * s], [.05 * s, .1 * s], [.03 * s, .14 * s], [.034 * s, .15 * s], [0, .15 * s]]), plain(color, .9)), x, y, z);
+    const pot = (g, x, y, z, s = 1, color = 0xe8dccd) => put(g, mesh(turned([[0, 0], [.04 * s, 0], [.055 * s, .05 * s], [.05 * s, .1 * s], [.03 * s, .14 * s], [.034 * s, .15 * s], [0, .15 * s]]), plain(color, .55)), x, y, z);
 
     /* ---------- The pieces ---------- */
     const B = {};
@@ -418,7 +523,7 @@
       put(g, new THREE.Mesh(ellipsoid(.05, .05, .05), glowing()), 0, .06, 0);
       put(g, new THREE.Mesh(cylinder(.004, .004, drop, 6), plain(0x2a1a13, .6)), 0, top + drop / 2, 0);
       put(g, mesh(cylinder(.06, .06, .02, 24), plain(0xe9ddd0, .8)), 0, top + drop, 0);
-      g.userData.lights = [[0, .02, 0, 1.4]];
+      g.userData.lights = [[0, .02, 0, .75]];
       return g;
     }
     B['dune-pendant-light'] = (F, k, o) => pendant(F, [[0, .3], [.1, .29], [.19, .24], [.24, .15], [.25, .03], [.245, 0]], (o && o.drop) || 1);
@@ -452,7 +557,7 @@
       const bark = plain(0x6f5446, .95), leaf = plain(0x7d7a58, .8);
       put(g, mesh(tube([[0, .27, 0], [.02, .6, .01], [-.03, .9, 0], [.01, 1.1, .02]], .022, 30, 8), bark));
       for (const [x, z] of [[-.16, .05], [.15, -.04], [.02, .14]]) put(g, mesh(tube([[0, .85, 0], [x * .6, 1.0, z * .6], [x, 1.12, z]], .01, 12, 6), bark));
-      const n = 320, leaves = new THREE.InstancedMesh(ellipsoid(.034, .006, .011), leaf, n);
+      const n = 320, leaves = new THREE.InstancedMesh(memo('oliveleaf', () => new THREE.SphereGeometry(1, 6, 4).scale(.034, .006, .011)), leaf, n);
       const crowns = [[-.16, 1.16, .05, .2], [.15, 1.14, -.04, .19], [.02, 1.28, .14, .2], [0, 1.2, 0, .22]];
       const o = new THREE.Object3D(), col = new THREE.Color();
       let seed = 7;
@@ -515,6 +620,190 @@
       return g;
     };
 
+    /* ---------- Props: what a shop is dressed with. Not for sale, not touchable. ---------- */
+    const PR = {};
+    const GLAZE = [0xe8dccd, 0xd8c3a8, 0x9a5236, 0xb58a66, 0xf1e8de, 0x6e6a4e, 0x8c6a4f];
+    const rand = (seed) => { let s = seed * 9301 + 49297; return () => (s = (s * 16807) % 2147483647) / 2147483647; };
+    /* Candle flames show only at night; the scene finds them by this mark. */
+    const flame = (g, x, y, z, s = 1) => { const f = put(g, new THREE.Mesh(ellipsoid(.006 * s, .015 * s, .006 * s), glowing(0xfff3dc, 0xffb05a)), x, y, z); f.userData.flame = 1; return f; };
+
+    /* Coffee-table books, lying flat in a loose stack. */
+    PR.books = (o) => {
+      const g = new THREE.Group(), b = batch(), r = rand(o.seed || 1);
+      let y = 0;
+      for (let i = 0; i < (o.n || 3); i++) {
+        const w = .22 + r() * .08, d = .27 + r() * .07, h = .02 + r() * .02;
+        book(b, w, h, d, BOOKS[Math.floor(r() * BOOKS.length)], (r() - .5) * .02, y, (r() - .5) * .02, (r() - .5) * .35, true);
+        y += h;
+      }
+      g.add(b.mesh(tinted()));
+      return g;
+    };
+    /* A few glazed pieces: a bottle, a round vase, a low bowl. */
+    PR.ceramics = (o) => {
+      const g = new THREE.Group(), r = rand(o.seed || 1), b = batch();
+      const shapes = [
+        [[0, 0], [.035, 0], [.05, .03], [.055, .09], [.045, .15], [.018, .2], [.016, .26], [.022, .272], [0, .266]],
+        [[0, 0], [.03, 0], [.065, .04], [.07, .08], [.05, .12], [.03, .135], [.032, .146], [0, .14]],
+        [[0, 0], [.035, 0], [.07, .02], [.086, .06], [.08, .063], [.062, .026], [0, .02]]
+      ];
+      const spots = [[-.07, -.02], [.065, .025], [0, .1]];
+      for (let i = 0; i < Math.min(3, o.n || 3); i++) {
+        const sh = shapes[(i + (o.seed || 0)) % shapes.length];
+        b.add(turned(sh, 40), GLAZE[Math.floor(r() * GLAZE.length)], spots[i][0], 0, spots[i][1], 0, r() * 6, 0, .8 + r() * .45);
+      }
+      g.add(b.mesh(tinted(.38)));
+      return g;
+    };
+    PR.candles = (o) => {
+      const g = new THREE.Group(), wax = plain(0xf3ebdf, .62), wick = plain(0x2a1a13, 1), n = o.n || 3, hs = [.12, .085, .06];
+      for (let i = 0; i < n; i++) {
+        const h = hs[i % 3], x = (i - (n - 1) / 2) * .085, z = (i % 2) * .035;
+        put(g, mesh(cylinder(.034, .034, h, 28), wax), x, h / 2, z);
+        put(g, new THREE.Mesh(cylinder(.0015, .0015, .012, 6), wick), x, h + .006, z);
+        flame(g, x, h + .024, z);
+      }
+      return g;
+    };
+    /* A taper in a turned brass holder, for the dining table. */
+    PR.tapers = () => {
+      const g = new THREE.Group();
+      put(g, mesh(turned([[0, 0], [.045, 0], [.047, .006], [.02, .014], [.012, .05], [.019, .062], [.015, .07], [0, .07]], 32), surface('brass')));
+      put(g, mesh(cylinder(.011, .012, .26, 16), plain(0xf1e6d6, .6)), 0, .2, 0);
+      flame(g, 0, .348, 0, .9);
+      return g;
+    };
+    /* One place at the table: plate, folded linen, brass cutlery, a glass. Front (+z) faces the diner. */
+    const glassMat = () => new THREE.MeshStandardMaterial({ color: 0xfffaf4, roughness: .04, transparent: true, opacity: .2, depthWrite: false, envMapIntensity: 1.6 });
+    PR.setting = () => {
+      const g = new THREE.Group(), cer = plain(0xf6f0e8, .26), brass = plain(0xc29a5e, .32, .9);
+      put(g, mesh(turned([[0, 0], [.1, 0], [.118, .006], [.137, .018], [.142, .021], [.124, .013], [0, .009]], 56), cer));
+      put(g, mesh(turned([[0, 0], [.055, 0], [.07, .006], [.088, .015], [.091, .017], [.075, .011], [0, .007]], 48), cer), 0, .011, 0);
+      rb(g, .1, .014, .14, .006, surface('natural', 0xeadfd2, 6), 0, .026, .005, 0, .25, 0);
+      rb(g, .012, .004, .19, .002, brass, -.175, .002, .01);
+      rb(g, .014, .004, .2, .002, brass, .175, .002, .01);
+      put(g, new THREE.Mesh(turned([[0, 0], [.032, 0], [.034, .006], [.036, .1], [.033, .1], [.031, .007], [0, .007]], 32), glassMat()), .15, 0, -.13);
+      return g;
+    };
+    PR.fruit = (o) => {
+      const g = new THREE.Group(), b = batch(), r = rand(o.seed || 3);
+      for (const [x, z, y] of [[0, 0, .045], [.052, .03, .03], [-.048, .034, .03], [.02, -.054, .03], [-.032, -.046, .03]]) {
+        b.add(ellipsoid(.034, .031, .034), r() > .45 ? 0xd9b03f : 0xcc7a2e, x, y, z, r(), r(), 0, .9 + r() * .2);
+      }
+      g.add(b.mesh(tinted(.45)));
+      return g;
+    };
+    /* An olive tree in a stone planter, larger than the one sold as a pot. */
+    PR.olive = (o) => { const g = B['luna-planter'](surface('travertine')); g.scale.setScalar(o.s || 1.7); return g; };
+    /* A fiddle-leaf fig: three stems in a clay pot, broad leaves larger towards the floor. */
+    PR.fig = (o) => {
+      const g = new THREE.Group(), r = rand(o.seed || 5);
+      put(g, mesh(turned([[0, 0], [.16, 0], [.2, .04], [.22, .3], [.232, .38], [.214, .386], [.2, .36], [0, .35]], 48), surface('travertine', 0xc99f82)));
+      put(g, mesh(cylinder(.2, .2, .01, 32), plain(0x3e2a20, 1)), 0, .358, 0);
+      const bark = plain(0x6f5a48, .95);
+      const stems = [[[0, .36, 0], [.03, .9, .02], [-.02, 1.4, .04], [.04, 1.85, 0]], [[0, .36, 0], [-.06, .8, -.03], [-.16, 1.3, -.06], [-.2, 1.62, -.05]], [[.02, .36, 0], [.08, .72, -.02], [.18, 1.1, -.08], [.25, 1.42, -.06]]];
+      const curves = stems.map((st) => new THREE.CatmullRomCurve3(st.map((p) => new V3(...p))));
+      for (const st of stems) put(g, mesh(tube(st, .015, 40, 8), bark));
+      /* A broad leaf: thin, folded a little along the midrib, narrower at the stalk, its tip lifting. */
+      const leafGeo = memo('figleaf', () => {
+        const gg = new THREE.SphereGeometry(1, 18, 10), p = gg.attributes.position;
+        for (let i = 0; i < p.count; i++) {
+          const x = p.getX(i), z = p.getZ(i);
+          p.setY(i, p.getY(i) * .3 + Math.abs(x) * .9 + z * z * .5);
+          p.setX(i, x * (1 - Math.max(0, -z) * .38));
+        }
+        gg.computeVertexNormals();
+        return gg.scale(.1, .012, .15).translate(0, 0, .14);
+      });
+      const per = 17, leaves = new THREE.InstancedMesh(leafGeo, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: .42, side: THREE.DoubleSide }), per * curves.length);
+      const ob = new THREE.Object3D(), col = new THREE.Color();
+      let k = 0;
+      curves.forEach((c, j) => {
+        for (let i = 0; i < per; i++, k++) {
+          const t = .32 + (i / (per - 1)) * .68, a = i * 2.3 + j * 1.7 + r() * .6, out = new V3(Math.cos(a), 0, Math.sin(a));
+          ob.position.copy(c.getPoint(t));
+          ob.lookAt(ob.position.clone().add(out.multiplyScalar(1).add(new V3(0, .35 + r() * .5 + t * .3, 0))));
+          ob.rotateZ((r() - .5) * .9);
+          ob.scale.setScalar(1.15 - t * .5 + r() * .15);
+          ob.updateMatrix(); leaves.setMatrixAt(k, ob.matrix);
+          leaves.setColorAt(k, col.setHSL(.23 + r() * .04, .36 + r() * .1, .17 + r() * .08, THREE.SRGBColorSpace));
+        }
+      });
+      leaves.castShadow = true;
+      g.add(leaves);
+      if (o.s) g.scale.setScalar(o.s);
+      return g;
+    };
+    /* DECO paper bags and gift boxes, for the counter. */
+    let logoTex = null;
+    function logoTexture() {
+      if (logoTex) return logoTex;
+      const c = document.createElement('canvas'); c.width = 512; c.height = 640;
+      const x = c.getContext('2d');
+      x.fillStyle = '#E8DAC8'; x.fillRect(0, 0, 512, 640);
+      const icon = document.querySelector('#logo-icon path'), word = document.querySelector('#logo-word path');
+      x.fillStyle = '#3B241B';
+      if (icon) { const k = 150 / 238; x.save(); x.translate(256 - 224 * k / 2, 190); x.scale(k, k); x.fill(new Path2D(icon.getAttribute('d')), 'evenodd'); x.restore(); }
+      if (word) { const k = 52 / 238; x.save(); x.translate(256 - 629 * k / 2, 380); x.scale(k, k); x.fill(new Path2D(word.getAttribute('d')), 'evenodd'); x.restore(); }
+      logoTex = new THREE.CanvasTexture(c); logoTex.colorSpace = THREE.SRGBColorSpace; logoTex.anisotropy = 8;
+      return logoTex;
+    }
+    function bagProp(g, x, y, z, ry, s = 1) {
+      const bag = new THREE.Group(), kraft = plain(0xe8dac8, .92), cord = plain(0x6f5446, .8);
+      rb(bag, .3, .38, .12, .004, kraft, 0, .19, 0);
+      put(bag, new THREE.Mesh(new THREE.PlaneGeometry(.3, .375), new THREE.MeshStandardMaterial({ map: logoTexture(), roughness: .92 })), 0, .19, .0605);
+      for (const dz of [-.035, .035]) put(bag, mesh(new THREE.TorusGeometry(.055, .0045, 8, 28, PI), cord), 0, .378, dz);
+      put(g, bag, x, y, z, 0, ry); bag.scale.setScalar(s);
+      return bag;
+    }
+    function boxProp(g, w, h, d, color, x, y, z, ry) {
+      const box = new THREE.Group(), ribbon = plain(0x9a5236, .55);
+      rb(box, w, h, d, .006, plain(color, .85), 0, h / 2, 0);
+      rb(box, w + .004, h + .004, .025, .002, ribbon, 0, h / 2, 0);
+      rb(box, .025, h + .006, d + .004, .002, ribbon, 0, h / 2, 0);
+      put(box, mesh(new THREE.TorusGeometry(.022, .006, 8, 20), ribbon), 0, h + .012, 0, PI / 2 - .5, 0, .6);
+      put(g, box, x, y, z, 0, ry);
+      return box;
+    }
+    /* The low cabinet behind the counter. Front (+z) faces the counter. */
+    PR.backbar = () => {
+      const g = new THREE.Group(), wal = surface('walnut');
+      rb(g, 1.84, .04, .36, .01, plain(0x2a1a13, .8), 0, .02, 0);
+      rb(g, 1.9, .78, .42, .05, wal, 0, .43, 0);
+      for (const x of [-.475, 0, .475]) seam(g, .006, .6, x, .43, .212);
+      bagProp(g, -.62, .82, 0, .1); bagProp(g, -.3, .82, -.04, -.12, .85);
+      boxProp(g, .26, .12, .2, 0xf1e8de, .22, .82, 0, .2); boxProp(g, .2, .1, .16, 0xc9b49a, .24, .94, 0, -.15); boxProp(g, .16, .14, .16, 0x6e6a4e, .58, .82, .02, .4);
+      return g;
+    };
+    /* The materials library: a long oak table laid with what a client can take home as samples. */
+    PR.library = () => {
+      const g = new THREE.Group(), oak = surface('oak'), W = 2.4, D = .9, H = .75;
+      rb(g, W, .05, D, .02, oak, 0, H - .025, 0);
+      for (const sx of [-1, 1]) for (const sz of [-1, 1]) put(g, mesh(cylinder(.03, .026, H - .05, 20), oak), sx * (W / 2 - .12), (H - .05) / 2, sz * (D / 2 - .1));
+      [['natural', -.9], ['terracotta', -.58], ['olive', -.26]].forEach(([k, x]) => {
+        const m = surface(k);
+        for (let i = 0; i < 5; i++) rb(g, .14, .006, .2, .003, m, x + i * .012, H + .003 + i * .0062, -.06 + i * .022, 0, .3 - i * .13, 0);
+      });
+      [['oak', .12], ['walnut', .3], ['smoked', .48]].forEach(([k, x], i) => rb(g, .14, .04, .2, .008, surface(k), x, H + .02, -.1 + i * .03, 0, -.12 + i * .1, 0));
+      for (let i = 0; i < 3; i++) rb(g, .2, .018, .2, .004, surface('travertine'), .86 - i * .035, H + .009 + i * .018, .04 + i * .02, 0, i * .22, 0);
+      return g;
+    };
+    PR.platform = (o) => { const g = new THREE.Group(); rb(g, o.w, o.h, o.d, Math.min(.05, o.h / 2.4), surface('travertine', 0xf3eadf, 1.1), 0, o.h / 2, 0); return g; };
+    /* A round stone display table, flared from a slim column. */
+    PR.pedestal = (o) => {
+      const g = new THREE.Group(), r = o.r || .6, h = o.h || .72;
+      put(g, mesh(turned([[0, 0], [r * .5, 0], [r * .52, .02], [r * .36, h * .3], [r * .34, h * .62], [r * .82, h - .06], [r, h - .035], [r, h], [0, h]], 64), surface('travertine')));
+      return g;
+    };
+    function prop(name, o) {
+      const make = PR[name];
+      if (!make) return null;
+      const g = make(o || {});
+      g.userData.glow = []; g.userData.flames = [];
+      g.traverse((m) => { if (m.userData.flame) g.userData.flames.push(m); else if (m.material && m.material.userData && m.material.userData.glow) g.userData.glow.push(m.material); });
+      return g;
+    }
+
     /* ---------- Build ---------- */
     function build(slug, finish, opts) {
       const make = B[slug];
@@ -529,7 +818,7 @@
       return g;
     }
 
-    return { build, has: (slug) => !!B[slug], roundedBox, turned, extrude, arch, roundRect, surface, plain, glowing };
+    return { build, prop, has: (slug) => !!B[slug], roundedBox, turned, extrude, arch, roundRect, cylinder, surface, plain, glowing, triplanar, batch, tinted };
   }
 
   window.DECO_MODELS = { create };
